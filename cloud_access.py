@@ -1,15 +1,23 @@
 import io
-# import os
+import os
 
 import boto3
 import pandas as pd
 
+
+# ============================================================
+# R2 CONFIGURATION
+# ============================================================
 
 R2_ENDPOINT_URL = "https://98f8e959e677f16bddcf44f609fec6a0.r2.cloudflarestorage.com"
 R2_ACCESS_KEY_ID = "00e18b0c16ecb3395cd6f7c8e0eb3554"
 R2_SECRET_ACCESS_KEY = "33799355abaedc234309dbfbc80a2a66c3bfd856f0dcaecf0031e1fbcbcd84a0"
 R2_BUCKET = "stocks-data"
 
+
+# ============================================================
+# R2 CLIENT
+# ============================================================
 
 s3 = boto3.client(
     "s3",
@@ -28,10 +36,11 @@ def log(message):
 
 
 # ============================================================
-# DOWNLOAD SYMBOL LIST
+# STOCK SYMBOLS
 # ============================================================
 
 def get_stock_symbols():
+
     response = s3.get_object(
         Bucket=R2_BUCKET,
         Key="misc/symbols.txt",
@@ -51,7 +60,7 @@ def get_stock_symbols():
 
 
 # ============================================================
-# DOWNLOAD RAW STOCK DATA
+# RAW STOCK DATA
 # ============================================================
 
 def download_raw_stock(symbol):
@@ -69,11 +78,9 @@ def download_raw_stock(symbol):
 
     data = response["Body"].read()
 
-    df = pd.read_parquet(
+    return pd.read_parquet(
         io.BytesIO(data)
     )
-
-    return df
 
 
 # ============================================================
@@ -84,6 +91,7 @@ def save_dataframe(
     df,
     key,
 ):
+
     buffer = io.BytesIO()
 
     df.to_parquet(

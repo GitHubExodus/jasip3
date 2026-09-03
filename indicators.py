@@ -16,6 +16,7 @@ TIMEFRAMES = {
     "1w": "W-FRI",
 }
 
+
 EMA_PERIODS = (
     3,
     5,
@@ -30,7 +31,7 @@ EMA_PERIODS = (
 
 
 # ============================================================
-# EMA
+# NUMBA EMA
 # ============================================================
 
 @njit
@@ -38,6 +39,7 @@ def ema_numba(
     values,
     period,
 ):
+
     n = len(values)
 
     result = np.empty(
@@ -68,9 +70,11 @@ def ema_numba(
         period,
         n,
     ):
+
         result[i] = (
             alpha * values[i]
-            + (
+            +
+            (
                 1.0 - alpha
             )
             * result[i - 1]
@@ -86,6 +90,7 @@ def ema_numba(
 def prepare_raw_data(
     df,
 ):
+
     df = df.copy()
 
     df.columns = [
@@ -150,6 +155,7 @@ def prepare_raw_data(
         )
 
     for column in numeric_columns:
+
         df[column] = pd.to_numeric(
             df[column],
             errors="coerce",
@@ -175,14 +181,15 @@ def resample_timeframe(
     raw_df,
     timeframe,
 ):
+
     rule = TIMEFRAMES[
         timeframe
     ]
 
     x = raw_df.copy()
 
-    # Convert to New York time before
-    # creating US stock-market timeframes.
+    # Convert into New York time before
+    # constructing the stock-market bars.
     x["timestamp"] = (
         x["timestamp"]
         .dt.tz_convert(
@@ -194,11 +201,16 @@ def resample_timeframe(
         "timestamp"
     )
 
+    # Preserve the actual timestamp of the
+    # final source candle inside each bar.
+    x["bar_timestamp"] = x.index
+
     aggregation = {
         "open": "first",
         "high": "max",
         "low": "min",
         "close": "last",
+        "bar_timestamp": "last",
     }
 
     if "volume" in x.columns:
@@ -219,21 +231,35 @@ def resample_timeframe(
             "high",
             "low",
             "close",
+            "bar_timestamp",
         ]
     )
 
-    result = result.reset_index()
+    result = result.reset_index(
+        drop=True
+    )
+
+    result["timestamp"] = (
+        result["bar_timestamp"]
+    )
+
+    result = result.drop(
+        columns=[
+            "bar_timestamp"
+        ]
+    )
 
     return result
 
 
 # ============================================================
-# ADD ALL EMAS
+# ADD EMAS
 # ============================================================
 
 def add_indicators(
     df,
 ):
+
     df = df.copy()
 
     close = np.asarray(
@@ -260,6 +286,7 @@ def add_indicators(
 def build_all_timeframes(
     raw_df,
 ):
+
     raw_df = prepare_raw_data(
         raw_df
     )

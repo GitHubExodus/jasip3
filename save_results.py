@@ -150,3 +150,29 @@ def save_all_results(
             timeframe,
             timeframe_results,
         )
+
+
+
+
+
+
+
+
+def save_strategy_equity(
+    symbol,
+    timeframe,
+    strategy_name,
+    equity_df,
+):
+
+    key = (
+        f"equity_test/"
+        f"{symbol}/"
+        f"{timeframe}/"
+        f"{strategy_name}_equity.parquet"
+    )
+
+    save_dataframe(
+        equity_df,
+        key,
+    )

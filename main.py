@@ -16,12 +16,8 @@ from strategies import (
     generate_strategies,
 )
 
-from backtest import (
-    build_all_equity_curves,
-)
-
 from save_results import (
-    save_timeframe_results,
+    save_strategy_equity,
 )
 
 
@@ -32,6 +28,7 @@ from save_results import (
 def run_stock(
     symbol,
 ):
+
     symbol = symbol.upper()
 
     log("")
@@ -42,7 +39,7 @@ def run_stock(
     log("=" * 70)
 
     # --------------------------------------------------------
-    # Download raw data.
+    # DOWNLOAD RAW DATA
     # --------------------------------------------------------
 
     raw = download_raw_stock(
@@ -52,11 +49,11 @@ def run_stock(
     log(
         f"Loaded "
         f"{len(raw):,} "
-        f"1-minute rows"
+        f"raw rows"
     )
 
     # --------------------------------------------------------
-    # Create all five timeframes.
+    # BUILD TIMEFRAMES
     # --------------------------------------------------------
 
     timeframe_data = (
@@ -65,13 +62,13 @@ def run_stock(
         )
     )
 
-    # --------------------------------------------------------
-    # Process every timeframe.
-    # --------------------------------------------------------
-
     total_timeframes = len(
         timeframe_data
     )
+
+    # --------------------------------------------------------
+    # PROCESS EACH TIMEFRAME
+    # --------------------------------------------------------
 
     for timeframe_number, (
         timeframe,
@@ -92,7 +89,7 @@ def run_stock(
         log("=" * 70)
 
         # ----------------------------------------------------
-        # Save indicators.
+        # SAVE INDICATOR DATA
         # ----------------------------------------------------
 
         indicator_key = (
@@ -108,7 +105,7 @@ def run_stock(
         )
 
         # ----------------------------------------------------
-        # Generate all 8 strategies.
+        # BUILD ALL 8 STRATEGIES
         # ----------------------------------------------------
 
         strategy_results = (
@@ -118,39 +115,24 @@ def run_stock(
         )
 
         # ----------------------------------------------------
-        # Build the 25 equity curves
-        # for every strategy.
+        # SAVE EACH STRATEGY
         # ----------------------------------------------------
 
-        final_results = {}
+        for strategy_name, equity_df in (
+            strategy_results.items()
+        ):
 
-        for strategy_name, (
-            strategy_combinations
-        ) in strategy_results.items():
-
-            print(
-                f"    Building equity curves "
-                f"for {strategy_name}...",
-                flush=True,
+            log(
+                f"    Saving "
+                f"{strategy_name}..."
             )
 
-            final_results[
-                strategy_name
-            ] = (
-                build_all_equity_curves(
-                    strategy_combinations
-                )
+            save_strategy_equity(
+                symbol,
+                timeframe,
+                strategy_name,
+                equity_df,
             )
-
-        # ----------------------------------------------------
-        # Save timeframe.
-        # ----------------------------------------------------
-
-        save_timeframe_results(
-            symbol,
-            timeframe,
-            final_results,
-        )
 
         log("")
         log(
@@ -173,21 +155,18 @@ def run_stock(
 def main():
 
     # --------------------------------------------------------
-    # If a symbol was supplied:
-    #
-    #     python3.11 main.py AAPL
-    #
-    # process only that symbol.
-    #
-    # Otherwise process symbols.txt.
+    # ONE STOCK IF PROVIDED
     # --------------------------------------------------------
 
     if len(sys.argv) > 1:
 
         symbols = [
-            sys.argv[1]
-            .upper()
+            sys.argv[1].upper()
         ]
+
+    # --------------------------------------------------------
+    # OTHERWISE ALL STOCKS FROM symbols.txt
+    # --------------------------------------------------------
 
     else:
 
@@ -199,6 +178,10 @@ def main():
         f"Stocks to process: "
         f"{len(symbols):,}"
     )
+
+    # --------------------------------------------------------
+    # PROCESS STOCKS
+    # --------------------------------------------------------
 
     for number, symbol in enumerate(
         symbols,
@@ -227,9 +210,13 @@ def main():
 
             traceback.print_exc()
 
-            # Continue to the next stock.
             continue
 
 
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
 if __name__ == "__main__":
+
     main()

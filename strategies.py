@@ -5,7 +5,7 @@ from numba import njit
 
 
 # ============================================================
-# CONFIGURATION
+# EMA STRATEGIES
 # ============================================================
 
 EMA_PAIRS = (
@@ -19,6 +19,11 @@ EMA_PAIRS = (
     (100, 200),
 )
 
+
+# ============================================================
+# EXIT CONFIGURATION
+# ============================================================
+
 STOP_LOSSES = (
     0.005,
     0.010,
@@ -26,6 +31,7 @@ STOP_LOSSES = (
     0.030,
     0.050,
 )
+
 
 RISK_REWARDS = (
     1.0,
@@ -37,7 +43,7 @@ RISK_REWARDS = (
 
 
 # ============================================================
-# BUILD 25 EXIT COMBINATIONS
+# BUILD 25 COMBINATIONS
 # ============================================================
 
 def build_exit_combinations():
@@ -75,7 +81,7 @@ STOP_ARRAY, RR_ARRAY = (
 
 
 # ============================================================
-# FIND EMA CROSSOVER SIGNALS
+# EMA CROSSOVER
 # ============================================================
 
 @njit
@@ -83,6 +89,7 @@ def find_crossovers_numba(
     fast_ema,
     slow_ema,
 ):
+
     n = len(
         fast_ema
     )
@@ -101,32 +108,39 @@ def find_crossovers_numba(
             np.isnan(
                 fast_ema[i - 1]
             )
-            or np.isnan(
+            or
+            np.isnan(
                 slow_ema[i - 1]
             )
-            or np.isnan(
+            or
+            np.isnan(
                 fast_ema[i]
             )
-            or np.isnan(
+            or
+            np.isnan(
                 slow_ema[i]
             )
         ):
             continue
 
+        # Fast EMA crosses ABOVE slow EMA.
         if (
             fast_ema[i - 1]
-            <= slow_ema[i - 1]
+            <=
+            slow_ema[i - 1]
             and
             fast_ema[i]
-            > slow_ema[i]
+            >
+            slow_ema[i]
         ):
+
             signals[i] = 1
 
     return signals
 
 
 # ============================================================
-# SIMULATE ALL 25 RR COMBINATIONS
+# SIMULATE ALL 25 EXIT CONFIGURATIONS
 # ============================================================
 
 @njit
@@ -134,24 +148,25 @@ def simulate_all_rr_numba(
     close,
     high,
     low,
-    signals,
+    signal_indices,
     stop_percentages,
     risk_rewards,
 ):
-    n = len(close)
 
-    combination_count = (
-        len(stop_percentages)
+    signal_count = len(
+        signal_indices
     )
 
-    # --------------------------------------------------------
-    # Maximum possible trades per combination is n.
-    # --------------------------------------------------------
+    combination_count = len(
+        stop_percentages
+    )
 
+    # Maximum number of trades per
+    # configuration is number of signals.
     entry_indices = np.full(
         (
             combination_count,
-            n,
+            signal_count + 1,
         ),
         -1,
         dtype=np.int64,
@@ -160,7 +175,7 @@ def simulate_all_rr_numba(
     exit_indices = np.full(
         (
             combination_count,
-            n,
+            signal_count + 1,
         ),
         -1,
         dtype=np.int64,
@@ -169,7 +184,7 @@ def simulate_all_rr_numba(
     entry_prices = np.zeros(
         (
             combination_count,
-            n,
+            signal_count + 1,
         ),
         dtype=np.float64,
     )
@@ -177,7 +192,7 @@ def simulate_all_rr_numba(
     exit_prices = np.zeros(
         (
             combination_count,
-            n,
+            signal_count + 1,
         ),
         dtype=np.float64,
     )
@@ -185,7 +200,7 @@ def simulate_all_rr_numba(
     returns = np.zeros(
         (
             combination_count,
-            n,
+            signal_count + 1,
         ),
         dtype=np.float64,
     )
@@ -194,11 +209,6 @@ def simulate_all_rr_numba(
         combination_count,
         dtype=np.int64,
     )
-
-    # --------------------------------------------------------
-    # One independent active trade for every
-    # SL/RR combination.
-    # --------------------------------------------------------
 
     active = np.zeros(
         combination_count,
@@ -226,17 +236,14 @@ def simulate_all_rr_numba(
         dtype=np.float64,
     )
 
-    # --------------------------------------------------------
-    # Process bars chronologically.
-    # --------------------------------------------------------
+    n = len(close)
+
+    signal_pointer = 0
 
     for i in range(n):
 
         # ----------------------------------------------------
-        # First process exits for already-active trades.
-        #
-        # We intentionally process exits before new entries
-        # on the same bar.
+        # CHECK ACTIVE TRADES
         # ----------------------------------------------------
 
         for c in range(
@@ -248,14 +255,18 @@ def simulate_all_rr_numba(
 
             stop_hit = (
                 low[i]
-                <= stop_prices[c]
+                <=
+                stop_prices[c]
             )
 
             target_hit = (
                 high[i]
-                >= target_prices[c]
+                >=
+                target_prices[c]
             )
 
+            # Stop loss gets priority if
+            # both occur on same candle.
             if stop_hit:
 
                 trade_number = (
@@ -337,8 +348,10 @@ def simulate_all_rr_numba(
                     trade_number,
                 ] = (
                     stop_percentages[c]
-                    * risk_rewards[c]
-                    * 100.0
+                    *
+                    risk_rewards[c]
+                    *
+                    100.0
                 )
 
                 trade_counts[c] += 1
@@ -346,57 +359,80 @@ def simulate_all_rr_numba(
                 active[c] = 0
 
         # ----------------------------------------------------
-        # New EMA crossover entry.
-        #
-        # Entry occurs at the close of the signal bar.
+        # NEW EMA CROSSOVER
         # ----------------------------------------------------
 
-        if signals[i] == 1:
+        if (
+            signal_pointer
+            <
+            signal_count
+        ):
 
-            for c in range(
-                combination_count
+            if (
+                signal_indices[
+                    signal_pointer
+                ]
+                ==
+                i
             ):
 
-                if active[c] != 0:
-                    continue
-
-                entry_price = close[i]
-
-                stop_pct = (
-                    stop_percentages[c]
+                entry_price = (
+                    close[i]
                 )
 
-                rr = (
-                    risk_rewards[c]
-                )
+                for c in range(
+                    combination_count
+                ):
 
-                active[c] = 1
+                    # One active trade per
+                    # strategy / RR combination.
+                    if active[c] != 0:
+                        continue
 
-                active_entry_index[c] = i
-
-                active_entry_price[c] = (
-                    entry_price
-                )
-
-                stop_prices[c] = (
-                    entry_price
-                    * (
-                        1.0
-                        - stop_pct
+                    stop_pct = (
+                        stop_percentages[c]
                     )
-                )
 
-                target_prices[c] = (
-                    entry_price
-                    * (
-                        1.0
-                        + stop_pct
-                        * rr
+                    rr = (
+                        risk_rewards[c]
                     )
-                )
+
+                    active[c] = 1
+
+                    active_entry_index[
+                        c
+                    ] = i
+
+                    active_entry_price[
+                        c
+                    ] = entry_price
+
+                    stop_prices[c] = (
+                        entry_price
+                        *
+                        (
+                            1.0
+                            -
+                            stop_pct
+                        )
+                    )
+
+                    target_prices[c] = (
+                        entry_price
+                        *
+                        (
+                            1.0
+                            +
+                            stop_pct
+                            *
+                            rr
+                        )
+                    )
+
+                signal_pointer += 1
 
     # --------------------------------------------------------
-    # Close any remaining trades at final close.
+    # CLOSE ANY REMAINING TRADES
     # --------------------------------------------------------
 
     final_index = n - 1
@@ -447,8 +483,10 @@ def simulate_all_rr_numba(
             trade_number,
         ] = (
             exit_price
-            / entry_price
-            - 1.0
+            /
+            entry_price
+            -
+            1.0
         ) * 100.0
 
         trade_counts[c] += 1
@@ -464,86 +502,16 @@ def simulate_all_rr_numba(
 
 
 # ============================================================
-# BUILD TRADE DATAFRAME
+# BUILD EQUITY CURVES
 # ============================================================
 
-def build_trade_dataframe(
-    df,
-    strategy_number,
-    combination_number,
-    entry_indices,
-    exit_indices,
-    entry_prices,
-    exit_prices,
-    returns,
-):
-    if len(returns) == 0:
-        return pd.DataFrame()
-
-    entry_times = (
-        df["timestamp"]
-        .iloc[entry_indices]
-        .to_numpy()
-    )
-
-    exit_times = (
-        df["timestamp"]
-        .iloc[exit_indices]
-        .to_numpy()
-    )
-
-    stop_pct = (
-        STOP_ARRAY[
-            combination_number
-        ]
-        * 100.0
-    )
-
-    rr = (
-        RR_ARRAY[
-            combination_number
-        ]
-    )
-
-    return pd.DataFrame(
-        {
-            "strategy":
-                strategy_number,
-
-            "stop_loss_pct":
-                stop_pct,
-
-            "risk_reward":
-                rr,
-
-            "entry_time":
-                entry_times,
-
-            "exit_time":
-                exit_times,
-
-            "entry_price":
-                entry_prices,
-
-            "exit_price":
-                exit_prices,
-
-            "return_pct":
-                returns,
-        }
-    )
-
-
-# ============================================================
-# RUN ONE STRATEGY
-# ============================================================
-
-def run_strategy(
+def build_equity_curves(
     df,
     strategy_number,
     fast_period,
     slow_period,
 ):
+
     close = np.asarray(
         df["close"],
         dtype=np.float64,
@@ -574,7 +542,7 @@ def run_strategy(
     )
 
     # --------------------------------------------------------
-    # Find EMA crossover signals once.
+    # FIND CROSSOVER SIGNALS
     # --------------------------------------------------------
 
     signals = (
@@ -584,8 +552,24 @@ def run_strategy(
         )
     )
 
+    signal_indices = (
+        np.flatnonzero(
+            signals
+        ).astype(
+            np.int64
+        )
+    )
+
+    if len(signal_indices) == 0:
+
+        return pd.DataFrame(
+            columns=[
+                "timestamp"
+            ]
+        )
+
     # --------------------------------------------------------
-    # Simulate all 25 exits at once.
+    # SIMULATE ALL 25 COMBINATIONS
     # --------------------------------------------------------
 
     (
@@ -599,58 +583,120 @@ def run_strategy(
         close,
         high,
         low,
-        signals,
+        signal_indices,
         STOP_ARRAY,
         RR_ARRAY,
     )
 
+    timestamps = df[
+        "timestamp"
+    ].to_numpy()
+
     # --------------------------------------------------------
-    # Convert Numba results into DataFrames.
+    # CREATE ONE EQUITY SERIES PER RR CONFIGURATION
     # --------------------------------------------------------
 
-    results = {}
+    curve_series = []
 
-    for combination_number in range(25):
+    for c in range(25):
 
         count = (
-            trade_counts[
-                combination_number
-            ]
+            trade_counts[c]
         )
 
-        trades = (
-            build_trade_dataframe(
-                df,
-                strategy_number,
-                combination_number,
-                entry_indices[
-                    combination_number,
-                    :count,
-                ],
-                exit_indices[
-                    combination_number,
-                    :count,
-                ],
-                entry_prices[
-                    combination_number,
-                    :count,
-                ],
-                exit_prices[
-                    combination_number,
-                    :count,
-                ],
-                returns[
-                    combination_number,
-                    :count,
-                ],
+        if count == 0:
+            continue
+
+        exits = exit_indices[
+            c,
+            :count
+        ]
+
+        trade_returns = returns[
+            c,
+            :count
+        ]
+
+        equity_values = []
+
+        equity = 100.000
+
+        for r in trade_returns:
+
+            equity *= (
+                1.0
+                +
+                r / 100.0
             )
+
+            equity = round(
+                equity,
+                3,
+            )
+
+            equity_values.append(
+                equity
+            )
+
+        column_name = (
+            f"equity_sl_"
+            f"{STOP_ARRAY[c] * 100.0:g}"
+            f"_rr_"
+            f"{RR_ARRAY[c]:g}"
         )
 
-        results[
-            combination_number
-        ] = trades
+        curve = pd.DataFrame(
+            {
+                "timestamp":
+                    timestamps[exits],
 
-    return results
+                column_name:
+                    np.asarray(
+                        equity_values,
+                        dtype=np.float64,
+                    ),
+            }
+        )
+
+        curve_series.append(
+            curve
+        )
+
+    # --------------------------------------------------------
+    # MERGE ALL 25 CURVES BY EXIT TIMESTAMP
+    # --------------------------------------------------------
+
+    result = None
+
+    for curve in curve_series:
+
+        if result is None:
+
+            result = curve
+
+        else:
+
+            result = result.merge(
+                curve,
+                on="timestamp",
+                how="outer",
+            )
+
+    # --------------------------------------------------------
+    # SORT BY TIME
+    # --------------------------------------------------------
+
+    result = (
+        result
+        .sort_values(
+            "timestamp"
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    return result
 
 
 # ============================================================
@@ -660,6 +706,7 @@ def run_strategy(
 def generate_strategies(
     df,
 ):
+
     results = {}
 
     total = len(
@@ -682,8 +729,8 @@ def generate_strategies(
             flush=True,
         )
 
-        strategy_results = (
-            run_strategy(
+        equity = (
+            build_equity_curves(
                 df,
                 strategy_number,
                 fast_period,
@@ -693,6 +740,6 @@ def generate_strategies(
 
         results[
             f"strategy_{strategy_number}"
-        ] = strategy_results
+        ] = equity
 
     return results
