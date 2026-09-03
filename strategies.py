@@ -14,7 +14,6 @@ RR_SETTINGS = {
 
 @njit
 def strategy_1_numba(
-    timestamps,
     close,
     high,
     low,
@@ -533,7 +532,6 @@ def strategy_1_ema_rr(
     return make_trade_dataframe(
         df,
         strategy_1_numba(
-            df["timestamp"].to_numpy(),
             df["close"].to_numpy(
                 dtype=np.float64
             ),
