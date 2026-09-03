@@ -2,6 +2,7 @@ import io
 import os
 import sys
 import traceback
+import heapq
 
 import boto3
 import numpy as np
@@ -22,14 +23,22 @@ R2_BUCKET = "stocks-data"
 
 
 # ============================================================
-# GLOBAL EQUITY CONFIGURATION
+# PATHS
 # ============================================================
-
-STARTING_EQUITY = 100.0
 
 EQUITY_ROOT = "equity_test"
 
-OUTPUT_ROOT = "global_equity"
+OUTPUT_KEY = (
+    "global_equity/"
+    "global_equity.parquet"
+)
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+STARTING_EQUITY = 100.0
 
 
 # ============================================================
@@ -49,35 +58,15 @@ s3 = boto3.client(
 # ============================================================
 
 def log(message):
-    print(message, flush=True)
 
-
-# ============================================================
-# GET STOCK SYMBOLS
-# ============================================================
-
-def get_stock_symbols():
-
-    response = s3.get_object(
-        Bucket=R2_BUCKET,
-        Key="misc/symbols.txt",
+    print(
+        message,
+        flush=True,
     )
 
-    text = response["Body"].read().decode(
-        "utf-8"
-    )
-
-    symbols = [
-        line.strip().upper()
-        for line in text.splitlines()
-        if line.strip()
-    ]
-
-    return symbols
-
 
 # ============================================================
-# FIND ALL EQUITY FILES
+# GET ALL EQUITY FILES
 # ============================================================
 
 def get_equity_files():
@@ -115,7 +104,7 @@ def get_equity_files():
 
 
 # ============================================================
-# DOWNLOAD ONE EQUITY FILE
+# DOWNLOAD EQUITY FILE
 # ============================================================
 
 def download_equity_file(
@@ -129,11 +118,9 @@ def download_equity_file(
 
     data = response["Body"].read()
 
-    df = pd.read_parquet(
+    return pd.read_parquet(
         io.BytesIO(data)
     )
-
-    return df
 
 
 # ============================================================
@@ -168,66 +155,50 @@ def save_dataframe(
 
 
 # ============================================================
-# EXTRACT METADATA FROM EQUITY FILE
+# LOAD ALL CURVES
+# ============================================================
+#
+# We do NOT create a giant matrix.
+#
+# Instead, each raw curve is converted into a small record:
+#
+# {
+#     timestamps,
+#     values
+# }
+#
+# The global calculation later walks through timestamps
+# and advances each curve only when that curve has a new
+# observation.
+#
 # ============================================================
 
-def parse_equity_file_key(
-    key,
-):
-
-    # Expected:
-    #
-    # equity_test/AAPL/5m/strategy_1_equity.parquet
-
-    parts = key.split("/")
-
-    if len(parts) != 4:
-        raise ValueError(
-            f"Unexpected equity key: {key}"
-        )
-
-    symbol = parts[1]
-
-    timeframe = parts[2]
-
-    strategy_file = parts[3]
-
-    strategy = (
-        strategy_file
-        .replace(
-            "_equity.parquet",
-            "",
-        )
-    )
-
-    return (
-        symbol,
-        timeframe,
-        strategy,
-    )
-
-
-# ============================================================
-# LOAD ALL RAW EQUITY CURVES
-# ============================================================
-
-def load_all_equity_curves(
+def load_all_curves(
     equity_files,
 ):
 
     curves = []
 
-    for number, key in enumerate(
+    total_files = len(
+        equity_files
+    )
+
+    for file_number, key in enumerate(
         equity_files,
         start=1,
     ):
 
-        log(
-            f"Loading equity file "
-            f"{number:,}/"
-            f"{len(equity_files):,}: "
-            f"{key}"
-        )
+        if (
+            file_number % 100 == 0
+            or
+            file_number == total_files
+        ):
+
+            log(
+                f"Loading files "
+                f"{file_number:,}/"
+                f"{total_files:,}"
+            )
 
         df = download_equity_file(
             key
@@ -237,17 +208,7 @@ def load_all_equity_curves(
             continue
 
         if "timestamp" not in df.columns:
-            raise ValueError(
-                f"No timestamp column: {key}"
-            )
-
-        (
-            symbol,
-            timeframe,
-            strategy,
-        ) = parse_equity_file_key(
-            key
-        )
+            continue
 
         df["timestamp"] = (
             pd.to_datetime(
@@ -276,19 +237,38 @@ def load_all_equity_curves(
 
         for column in equity_columns:
 
+            curve_df = df[
+                [
+                    "timestamp",
+                    column,
+                ]
+            ].dropna(
+                subset=[
+                    column
+                ]
+            )
+
+            if curve_df.empty:
+                continue
+
+            timestamps = (
+                curve_df[
+                    "timestamp"
+                ]
+                .astype("int64")
+                .to_numpy()
+            )
+
+            values = np.asarray(
+                curve_df[column],
+                dtype=np.float64,
+            )
+
             curves.append(
-                {
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "strategy": strategy,
-                    "curve": column,
-                    "data": df[
-                        [
-                            "timestamp",
-                            column,
-                        ]
-                    ].copy(),
-                }
+                (
+                    timestamps,
+                    values,
+                )
             )
 
     return curves
@@ -297,145 +277,68 @@ def load_all_equity_curves(
 # ============================================================
 # BUILD GLOBAL TIMELINE
 # ============================================================
+#
+# We still need the timestamps, but only as a 1-dimensional
+# array. This is tiny compared with the old 530 GiB matrix.
+#
+# ============================================================
 
 def build_global_timeline(
     curves,
 ):
 
-    timestamps = []
+    log("")
+    log(
+        "Building global timeline..."
+    )
 
-    for curve in curves:
+    timestamp_chunks = []
 
-        data = curve["data"]
+    for timestamps, values in curves:
 
-        timestamps.append(
-            data["timestamp"]
+        timestamp_chunks.append(
+            timestamps
         )
 
-    if not timestamps:
+    if not timestamp_chunks:
 
-        return pd.DatetimeIndex(
-            [],
-            tz="UTC",
+        return np.empty(
+            0,
+            dtype=np.int64,
         )
 
-    combined = pd.concat(
-        timestamps,
-        ignore_index=True,
+    all_timestamps = np.concatenate(
+        timestamp_chunks
     )
 
-    combined = (
-        pd.DatetimeIndex(
-            combined
-            .drop_duplicates()
-            .sort_values()
-        )
+    all_timestamps = np.unique(
+        all_timestamps
     )
 
-    return combined
+    all_timestamps.sort()
 
-
-# ============================================================
-# PREPARE CURVE DATA
-# ============================================================
-
-def prepare_curve(
-    curve,
-):
-
-    data = curve["data"].copy()
-
-    column = curve["curve"]
-
-    data = data[
-        [
-            "timestamp",
-            column,
-        ]
-    ]
-
-    data[column] = pd.to_numeric(
-        data[column],
-        errors="coerce",
-    )
-
-    data = data.dropna(
-        subset=[
-            column
-        ]
-    )
-
-    data = (
-        data
-        .drop_duplicates(
-            subset="timestamp",
-            keep="last",
-        )
-        .sort_values(
-            "timestamp"
-        )
-        .reset_index(
-            drop=True
-        )
-    )
-
-    return data
-
-
-# ============================================================
-# CREATE AS-OF VALUE ARRAYS
-# ============================================================
-
-def align_curve_to_global_time(
-    curve_data,
-    timeline,
-):
-
-    values = np.asarray(
-        curve_data.iloc[:, 1],
-        dtype=np.float64,
-    )
-
-    curve_times = (
-        curve_data["timestamp"]
-        .astype("int64")
-        .to_numpy()
-    )
-
-    global_times = (
-        timeline
-        .astype("int64")
-        .to_numpy()
-    )
-
-    # For every global timestamp, find
-    # the latest raw curve timestamp
-    # that is <= global timestamp.
-    positions = np.searchsorted(
-        curve_times,
-        global_times,
-        side="right",
-    ) - 1
-
-    aligned = np.full(
-        len(global_times),
-        np.nan,
-        dtype=np.float64,
-    )
-
-    valid = positions >= 0
-
-    aligned[valid] = (
-        values[
-            positions[valid]
-        ]
-    )
-
-    return aligned
+    return all_timestamps
 
 
 # ============================================================
 # CALCULATE GLOBAL EQUITY
+# ============================================================
+#
+# IMPORTANT:
+#
+# We do NOT create:
+#
+#     96,650 x 735,826
+#
+# Instead we maintain:
+#
+#     current equity for each raw curve
+#     previous equity for each raw curve
+#
+# That is only:
+#
+#     96,650 values
+#
 # ============================================================
 
 def calculate_global_equity(
@@ -462,66 +365,155 @@ def calculate_global_equity(
         f"{timestamp_count:,}"
     )
 
+    if curve_count == 0:
+
+        return pd.DataFrame(
+            columns=[
+                "timestamp",
+                "equity",
+            ]
+        )
+
     # --------------------------------------------------------
-    # ALIGN EVERY RAW CURVE TO THE GLOBAL TIMELINE
+    # CURRENT VALUE OF EVERY CURVE
     # --------------------------------------------------------
 
-    log("")
-    log(
-        "Aligning raw equity curves..."
-    )
-
-    aligned_equities = np.full(
-        (
-            curve_count,
-            timestamp_count,
-        ),
+    current_values = np.full(
+        curve_count,
         np.nan,
         dtype=np.float64,
     )
 
-    for i, curve in enumerate(
-        curves
-    ):
+    # --------------------------------------------------------
+    # PREVIOUS VALUE OF EVERY CURVE
+    # --------------------------------------------------------
 
-        data = prepare_curve(
-            curve
-        )
+    previous_values = np.full(
+        curve_count,
+        np.nan,
+        dtype=np.float64,
+    )
 
-        aligned_equities[i] = (
-            align_curve_to_global_time(
-                data,
-                timeline,
+    # --------------------------------------------------------
+    # CURRENT POSITION INSIDE EACH CURVE
+    # --------------------------------------------------------
+
+    positions = np.zeros(
+        curve_count,
+        dtype=np.int64,
+    )
+
+    # --------------------------------------------------------
+    # HEAP
+    #
+    # Each entry:
+    #
+    # (next_timestamp, curve_number)
+    #
+    # This lets us efficiently find which raw curves have
+    # a new value at the current global timestamp.
+    # --------------------------------------------------------
+
+    heap = []
+
+    for curve_number, (
+        timestamps,
+        values,
+    ) in enumerate(curves):
+
+        if len(timestamps) == 0:
+            continue
+
+        heapq.heappush(
+            heap,
+            (
+                timestamps[0],
+                curve_number,
             )
         )
 
-        if (
-            (i + 1) % 1000 == 0
-            or
-            i + 1 == curve_count
-        ):
-
-            log(
-                f"  Aligned "
-                f"{i + 1:,}/"
-                f"{curve_count:,}"
-            )
-
     # --------------------------------------------------------
-    # GLOBAL EQUITY
+    # RESULT ARRAYS
     # --------------------------------------------------------
 
-    global_equity = np.empty(
+    global_equity_values = np.empty(
         timestamp_count,
         dtype=np.float64,
     )
 
-    global_equity[0] = (
+    # --------------------------------------------------------
+    # MAIN EQUITY
+    # --------------------------------------------------------
+
+    main_equity = (
         STARTING_EQUITY
     )
 
     # --------------------------------------------------------
-    # PROCESS EACH TIMESTAMP
+    # FIRST TIMESTAMP
+    # --------------------------------------------------------
+    #
+    # There is no previous bar yet, so we initialize every
+    # curve that has its first observation at the first
+    # global timestamp.
+    #
+    # Main equity remains 100 here.
+    #
+    # --------------------------------------------------------
+
+    first_timestamp = timeline[0]
+
+    while (
+        heap
+        and
+        heap[0][0]
+        <= first_timestamp
+    ):
+
+        timestamp, curve_number = (
+            heapq.heappop(heap)
+        )
+
+        timestamps, values = (
+            curves[curve_number]
+        )
+
+        position = (
+            positions[curve_number]
+        )
+
+        current_values[
+            curve_number
+        ] = values[position]
+
+        positions[
+            curve_number
+        ] += 1
+
+        if (
+            positions[curve_number]
+            <
+            len(timestamps)
+        ):
+
+            heapq.heappush(
+                heap,
+                (
+                    timestamps[
+                        positions[
+                            curve_number
+                        ]
+                    ],
+                    curve_number,
+                )
+            )
+
+    global_equity_values[0] = (
+        main_equity
+    )
+
+    # --------------------------------------------------------
+    # PROCESS REMAINING TIMESTAMPS
     # --------------------------------------------------------
 
     log("")
@@ -529,79 +521,166 @@ def calculate_global_equity(
         "Calculating global equity..."
     )
 
-    previous_values = (
-        aligned_equities[:, 0]
-    )
-
-    main_equity = (
-        STARTING_EQUITY
-    )
-
     for t in range(
         1,
         timestamp_count,
     ):
 
-        current_values = (
-            aligned_equities[:, t]
+        current_timestamp = (
+            timeline[t]
         )
 
         # ----------------------------------------------------
-        # FIND VALID CURVES
+        # MOVE EVERY CURVE THAT HAS A NEW VALUE
         # ----------------------------------------------------
 
-        valid_current = (
+        while (
+            heap
+            and
+            heap[0][0]
+            <= current_timestamp
+        ):
+
+            timestamp, curve_number = (
+                heapq.heappop(heap)
+            )
+
+            timestamps, values = (
+                curves[curve_number]
+            )
+
+            position = (
+                positions[
+                    curve_number
+                ]
+            )
+
+            # ------------------------------------------------
+            # Move current value to previous value.
+            # ------------------------------------------------
+
+            current_value = (
+                values[position]
+            )
+
+            previous_values[
+                curve_number
+            ] = current_values[
+                curve_number
+            ]
+
+            current_values[
+                curve_number
+            ] = current_value
+
+            positions[
+                curve_number
+            ] += 1
+
+            # ------------------------------------------------
+            # Add next observation for this curve to heap.
+            # ------------------------------------------------
+
+            if (
+                positions[
+                    curve_number
+                ]
+                <
+                len(timestamps)
+            ):
+
+                next_position = (
+                    positions[
+                        curve_number
+                    ]
+                )
+
+                heapq.heappush(
+                    heap,
+                    (
+                        timestamps[
+                            next_position
+                        ],
+                        curve_number,
+                    )
+                )
+
+        # ----------------------------------------------------
+        # DETERMINE WHICH CURVES CAN CONTRIBUTE
+        # ----------------------------------------------------
+        #
+        # A curve must:
+        #
+        # 1. Have a current value.
+        # 2. Have a previous value.
+        # 3. Be profitable now.
+        #
+        # Profitable means:
+        #
+        # current equity > 100
+        #
+        # ----------------------------------------------------
+
+        valid = (
             ~np.isnan(
                 current_values
             )
-        )
-
-        valid_previous = (
+            &
             ~np.isnan(
                 previous_values
             )
         )
 
-        valid = (
-            valid_current
-            &
-            valid_previous
+        profitable = (
+            current_values
+            >
+            STARTING_EQUITY
         )
 
-        if not np.any(valid):
+        contributors = (
+            valid
+            &
+            profitable
+        )
 
-            global_equity[t] = (
+        # ----------------------------------------------------
+        # IF NO CURVE IS PROFITABLE
+        # ----------------------------------------------------
+
+        if not np.any(
+            contributors
+        ):
+
+            global_equity_values[t] = (
                 main_equity
             )
 
-            previous_values = (
-                current_values
-            )
+            if (
+                (t + 1) % 1000 == 0
+                or
+                t + 1 == timestamp_count
+            ):
+
+                log(
+                    f"  Timestamp "
+                    f"{t + 1:,}/"
+                    f"{timestamp_count:,} "
+                    f"| Equity: "
+                    f"{main_equity:.6f}"
+                )
 
             continue
 
         # ----------------------------------------------------
-        # CURRENT PROFITS
-        #
-        # Every raw equity starts at 100.
-        #
-        # A raw equity of:
-        #
-        # 120 -> +20 profit
-        # 100 ->  0 profit
-        #  80  -> -20 profit
-        #
-        # Only positive profits participate.
+        # POSITIVE PROFITS
         # ----------------------------------------------------
 
-        profits = (
-            current_values[valid]
-            - STARTING_EQUITY
-        )
-
-        positive_profits = np.maximum(
-            profits,
-            0.0,
+        positive_profits = (
+            current_values[
+                contributors
+            ]
+            -
+            STARTING_EQUITY
         )
 
         total_positive_profit = (
@@ -611,7 +690,7 @@ def calculate_global_equity(
         )
 
         # ----------------------------------------------------
-        # NO PROFITABLE CURVES
+        # SAFETY CHECK
         # ----------------------------------------------------
 
         if (
@@ -619,28 +698,31 @@ def calculate_global_equity(
             <= 0.0
         ):
 
-            global_equity[t] = (
+            global_equity_values[t] = (
                 main_equity
-            )
-
-            previous_values = (
-                current_values
             )
 
             continue
 
         # ----------------------------------------------------
         # CONTRIBUTION WEIGHTS
+        # ----------------------------------------------------
         #
         # Example:
         #
-        # A profit = 20
-        # B profit = 40
+        # Curve A = 120
+        # Curve B = 140
         #
-        # total = 60
+        # Profits:
         #
-        # A = 20/60
-        # B = 40/60
+        # A = 20
+        # B = 40
+        #
+        # Total = 60
+        #
+        # A contribution = 33.33%
+        # B contribution = 66.67%
+        #
         # ----------------------------------------------------
 
         weights = (
@@ -650,48 +732,82 @@ def calculate_global_equity(
         )
 
         # ----------------------------------------------------
-        # RAW EQUITY GROWTH
-        #
-        # If:
-        #
-        # previous = 1
-        # current  = 2
-        #
-        # growth = 2x
-        #
-        # growth return = +100%
+        # GET PREVIOUS AND CURRENT VALUES
         # ----------------------------------------------------
 
-        current_valid = (
-            current_values[valid]
+        current = (
+            current_values[
+                contributors
+            ]
         )
 
-        previous_valid = (
-            previous_values[valid]
+        previous = (
+            previous_values[
+                contributors
+            ]
         )
+
+        # ----------------------------------------------------
+        # RAW CURVE GROWTH
+        # ----------------------------------------------------
+        #
+        # Example:
+        #
+        # Previous = 1
+        # Current  = 2
+        #
+        # Growth = 2.0
+        # Return = +100%
+        #
+        # ----------------------------------------------------
+
+        valid_previous = (
+            previous
+            >
+            0.0
+        )
+
+        if not np.any(
+            valid_previous
+        ):
+
+            global_equity_values[t] = (
+                main_equity
+            )
+
+            continue
+
+        current = current[
+            valid_previous
+        ]
+
+        previous = previous[
+            valid_previous
+        ]
+
+        weights = weights[
+            valid_previous
+        ]
 
         growth = (
-            current_valid
+            current
             /
-            previous_valid
+            previous
         )
 
         raw_returns = (
-            growth - 1.0
+            growth
+            -
+            1.0
         )
 
         # ----------------------------------------------------
-        # WEIGHT EACH RAW RETURN
+        # WEIGHTED RETURN
+        # ----------------------------------------------------
         #
-        # If:
+        # Contribution weight determines how much of the
+        # raw curve's movement is used by the global strategy.
         #
-        # raw return = +100%
-        # contribution = 10%
-        #
-        # contribution to main equity =
-        #
-        # 10% × 100%
-        # = +10%
         # ----------------------------------------------------
 
         weighted_returns = (
@@ -716,17 +832,16 @@ def calculate_global_equity(
             total_return
         )
 
+        # Keep precision high enough to avoid unnecessary
+        # rounding accumulation over hundreds of thousands
+        # of timestamps.
         main_equity = round(
             main_equity,
             6,
         )
 
-        global_equity[t] = (
+        global_equity_values[t] = (
             main_equity
-        )
-
-        previous_values = (
-            current_values
         )
 
         # ----------------------------------------------------
@@ -753,31 +868,17 @@ def calculate_global_equity(
 
     result = pd.DataFrame(
         {
-            "timestamp": timeline,
-            "equity": global_equity,
+            "timestamp": pd.to_datetime(
+                timeline,
+                utc=True,
+            ),
+            "equity": (
+                global_equity_values
+            ),
         }
     )
 
     return result
-
-
-# ============================================================
-# SAVE GLOBAL EQUITY
-# ============================================================
-
-def save_global_equity(
-    result,
-):
-
-    key = (
-        f"{OUTPUT_ROOT}/"
-        f"global_equity.parquet"
-    )
-
-    save_dataframe(
-        result,
-        key,
-    )
 
 
 # ============================================================
@@ -792,7 +893,7 @@ def main():
     log("=" * 70)
 
     # --------------------------------------------------------
-    # FIND EQUITY FILES
+    # FIND FILES
     # --------------------------------------------------------
 
     log("")
@@ -820,8 +921,13 @@ def main():
     # LOAD CURVES
     # --------------------------------------------------------
 
+    log("")
+    log(
+        "Loading raw equity curves..."
+    )
+
     curves = (
-        load_all_equity_curves(
+        load_all_curves(
             equity_files
         )
     )
@@ -833,13 +939,8 @@ def main():
     )
 
     # --------------------------------------------------------
-    # BUILD GLOBAL TIMELINE
+    # BUILD TIMELINE
     # --------------------------------------------------------
-
-    log("")
-    log(
-        "Building global timeline..."
-    )
 
     timeline = (
         build_global_timeline(
@@ -859,7 +960,7 @@ def main():
         )
 
     # --------------------------------------------------------
-    # CALCULATE GLOBAL EQUITY
+    # CALCULATE
     # --------------------------------------------------------
 
     result = (
@@ -873,20 +974,25 @@ def main():
     # SAVE
     # --------------------------------------------------------
 
-    save_global_equity(
-        result
+    save_dataframe(
+        result,
+        OUTPUT_KEY,
     )
 
     # --------------------------------------------------------
-    # FINAL STATISTICS
+    # STATISTICS
     # --------------------------------------------------------
 
     starting = (
-        result["equity"].iloc[0]
+        result[
+            "equity"
+        ].iloc[0]
     )
 
     ending = (
-        result["equity"].iloc[-1]
+        result[
+            "equity"
+        ].iloc[-1]
     )
 
     total_return = (
@@ -901,6 +1007,16 @@ def main():
     log("=" * 70)
     log("GLOBAL EQUITY COMPLETE")
     log("=" * 70)
+
+    log(
+        f"Raw curves: "
+        f"{len(curves):,}"
+    )
+
+    log(
+        f"Timestamps: "
+        f"{len(result):,}"
+    )
 
     log(
         f"Starting equity: "
