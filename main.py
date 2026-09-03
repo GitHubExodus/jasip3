@@ -2,6 +2,7 @@ import sys
 import traceback
 
 from cloud_access import (
+    get_stock_symbols,
     download_raw_stock,
     save_dataframe,
     log,
@@ -11,20 +12,26 @@ from indicators import (
     build_all_timeframes,
 )
 
+from strategies import (
+    generate_strategies,
+)
+
 from backtest import (
-    run_all_timeframes,
+    build_all_equity_curves,
 )
 
 from save_results import (
-    save_all_results,
+    save_timeframe_results,
 )
 
 
-SYMBOL = "AAPL"
+# ============================================================
+# PROCESS ONE STOCK
+# ============================================================
 
-
-def run_stock(symbol):
-
+def run_stock(
+    symbol,
+):
     symbol = symbol.upper()
 
     log("")
@@ -34,14 +41,23 @@ def run_stock(symbol):
     )
     log("=" * 70)
 
+    # --------------------------------------------------------
+    # Download raw data.
+    # --------------------------------------------------------
+
     raw = download_raw_stock(
         symbol
     )
 
     log(
-        f"Loaded {len(raw):,} "
+        f"Loaded "
+        f"{len(raw):,} "
         f"1-minute rows"
     )
+
+    # --------------------------------------------------------
+    # Create all five timeframes.
+    # --------------------------------------------------------
 
     timeframe_data = (
         build_all_timeframes(
@@ -49,11 +65,37 @@ def run_stock(symbol):
         )
     )
 
-    for timeframe, df in (
-        timeframe_data.items()
+    # --------------------------------------------------------
+    # Process every timeframe.
+    # --------------------------------------------------------
+
+    total_timeframes = len(
+        timeframe_data
+    )
+
+    for timeframe_number, (
+        timeframe,
+        df,
+    ) in enumerate(
+        timeframe_data.items(),
+        start=1,
     ):
 
-        key = (
+        log("")
+        log("=" * 70)
+        log(
+            f"TIMEFRAME "
+            f"{timeframe_number}/"
+            f"{total_timeframes}: "
+            f"{timeframe}"
+        )
+        log("=" * 70)
+
+        # ----------------------------------------------------
+        # Save indicators.
+        # ----------------------------------------------------
+
+        indicator_key = (
             f"equity_test/"
             f"{symbol}/"
             f"indicators/"
@@ -62,44 +104,131 @@ def run_stock(symbol):
 
         save_dataframe(
             df,
-            key,
+            indicator_key,
         )
 
-    results = run_all_timeframes(
-        timeframe_data
-    )
+        # ----------------------------------------------------
+        # Generate all 8 strategies.
+        # ----------------------------------------------------
 
-    save_all_results(
-        symbol,
-        results,
-    )
+        strategy_results = (
+            generate_strategies(
+                df
+            )
+        )
+
+        # ----------------------------------------------------
+        # Build the 25 equity curves
+        # for every strategy.
+        # ----------------------------------------------------
+
+        final_results = {}
+
+        for strategy_name, (
+            strategy_combinations
+        ) in strategy_results.items():
+
+            print(
+                f"    Building equity curves "
+                f"for {strategy_name}...",
+                flush=True,
+            )
+
+            final_results[
+                strategy_name
+            ] = (
+                build_all_equity_curves(
+                    strategy_combinations
+                )
+            )
+
+        # ----------------------------------------------------
+        # Save timeframe.
+        # ----------------------------------------------------
+
+        save_timeframe_results(
+            symbol,
+            timeframe,
+            final_results,
+        )
+
+        log("")
+        log(
+            f"Finished timeframe: "
+            f"{timeframe}"
+        )
 
     log("")
     log("=" * 70)
     log(
-        f"FINISHED: {symbol}"
+        f"FINISHED STOCK: {symbol}"
     )
     log("=" * 70)
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def main():
 
-    symbol = (
-        sys.argv[1]
-        if len(sys.argv) > 1
-        else SYMBOL
-    )
+    # --------------------------------------------------------
+    # If a symbol was supplied:
+    #
+    #     python3.11 main.py AAPL
+    #
+    # process only that symbol.
+    #
+    # Otherwise process symbols.txt.
+    # --------------------------------------------------------
 
-    try:
+    if len(sys.argv) > 1:
 
-        run_stock(
-            symbol
+        symbols = [
+            sys.argv[1]
+            .upper()
+        ]
+
+    else:
+
+        symbols = (
+            get_stock_symbols()
         )
 
-    except Exception:
+    log(
+        f"Stocks to process: "
+        f"{len(symbols):,}"
+    )
 
-        traceback.print_exc()
-        sys.exit(1)
+    for number, symbol in enumerate(
+        symbols,
+        start=1,
+    ):
+
+        log("")
+        log(
+            f"STOCK "
+            f"{number}/{len(symbols)}: "
+            f"{symbol}"
+        )
+
+        try:
+
+            run_stock(
+                symbol
+            )
+
+        except Exception:
+
+            log(
+                f"ERROR processing "
+                f"{symbol}"
+            )
+
+            traceback.print_exc()
+
+            # Continue to the next stock.
+            continue
 
 
 if __name__ == "__main__":

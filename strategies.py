@@ -4,510 +4,523 @@ import pandas as pd
 from numba import njit
 
 
-RR_SETTINGS = {
-    "5m": (0.005, 2.0),
-    "30m": (0.010, 2.0),
-    "1d": (0.020, 2.0),
-    "1w": (0.050, 2.0),
-}
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
+EMA_PAIRS = (
+    (3, 5),
+    (5, 9),
+    (9, 14),
+    (14, 21),
+    (21, 30),
+    (30, 50),
+    (50, 100),
+    (100, 200),
+)
+
+STOP_LOSSES = (
+    0.005,
+    0.010,
+    0.020,
+    0.030,
+    0.050,
+)
+
+RISK_REWARDS = (
+    1.0,
+    1.5,
+    2.0,
+    3.0,
+    5.0,
+)
+
+
+# ============================================================
+# BUILD 25 EXIT COMBINATIONS
+# ============================================================
+
+def build_exit_combinations():
+
+    stop_values = []
+    rr_values = []
+
+    for stop_pct in STOP_LOSSES:
+
+        for rr in RISK_REWARDS:
+
+            stop_values.append(
+                stop_pct
+            )
+
+            rr_values.append(
+                rr
+            )
+
+    return (
+        np.asarray(
+            stop_values,
+            dtype=np.float64,
+        ),
+        np.asarray(
+            rr_values,
+            dtype=np.float64,
+        ),
+    )
+
+
+STOP_ARRAY, RR_ARRAY = (
+    build_exit_combinations()
+)
+
+
+# ============================================================
+# FIND EMA CROSSOVER SIGNALS
+# ============================================================
 
 @njit
-def strategy_1_numba(
+def find_crossovers_numba(
+    fast_ema,
+    slow_ema,
+):
+    n = len(
+        fast_ema
+    )
+
+    signals = np.zeros(
+        n,
+        dtype=np.uint8,
+    )
+
+    for i in range(
+        1,
+        n,
+    ):
+
+        if (
+            np.isnan(
+                fast_ema[i - 1]
+            )
+            or np.isnan(
+                slow_ema[i - 1]
+            )
+            or np.isnan(
+                fast_ema[i]
+            )
+            or np.isnan(
+                slow_ema[i]
+            )
+        ):
+            continue
+
+        if (
+            fast_ema[i - 1]
+            <= slow_ema[i - 1]
+            and
+            fast_ema[i]
+            > slow_ema[i]
+        ):
+            signals[i] = 1
+
+    return signals
+
+
+# ============================================================
+# SIMULATE ALL 25 RR COMBINATIONS
+# ============================================================
+
+@njit
+def simulate_all_rr_numba(
     close,
     high,
     low,
-    ema3,
-    ema5,
-    stop_pct,
-    rr,
+    signals,
+    stop_percentages,
+    risk_rewards,
 ):
     n = len(close)
 
-    entry_indices = np.empty(
-        n,
+    combination_count = (
+        len(stop_percentages)
+    )
+
+    # --------------------------------------------------------
+    # Maximum possible trades per combination is n.
+    # --------------------------------------------------------
+
+    entry_indices = np.full(
+        (
+            combination_count,
+            n,
+        ),
+        -1,
         dtype=np.int64,
     )
 
-    exit_indices = np.empty(
-        n,
+    exit_indices = np.full(
+        (
+            combination_count,
+            n,
+        ),
+        -1,
         dtype=np.int64,
     )
 
-    entry_prices = np.empty(
-        n,
+    entry_prices = np.zeros(
+        (
+            combination_count,
+            n,
+        ),
         dtype=np.float64,
     )
 
-    exit_prices = np.empty(
-        n,
+    exit_prices = np.zeros(
+        (
+            combination_count,
+            n,
+        ),
         dtype=np.float64,
     )
 
-    returns = np.empty(
-        n,
+    returns = np.zeros(
+        (
+            combination_count,
+            n,
+        ),
         dtype=np.float64,
     )
 
-    count = 0
+    trade_counts = np.zeros(
+        combination_count,
+        dtype=np.int64,
+    )
 
-    active = False
+    # --------------------------------------------------------
+    # One independent active trade for every
+    # SL/RR combination.
+    # --------------------------------------------------------
 
-    entry_index = -1
-    entry_price = 0.0
-    stop_price = 0.0
-    target_price = 0.0
+    active = np.zeros(
+        combination_count,
+        dtype=np.uint8,
+    )
 
-    for i in range(1, n):
+    active_entry_index = np.full(
+        combination_count,
+        -1,
+        dtype=np.int64,
+    )
 
-        if (
-            np.isnan(ema3[i])
-            or np.isnan(ema5[i])
+    active_entry_price = np.zeros(
+        combination_count,
+        dtype=np.float64,
+    )
+
+    stop_prices = np.zeros(
+        combination_count,
+        dtype=np.float64,
+    )
+
+    target_prices = np.zeros(
+        combination_count,
+        dtype=np.float64,
+    )
+
+    # --------------------------------------------------------
+    # Process bars chronologically.
+    # --------------------------------------------------------
+
+    for i in range(n):
+
+        # ----------------------------------------------------
+        # First process exits for already-active trades.
+        #
+        # We intentionally process exits before new entries
+        # on the same bar.
+        # ----------------------------------------------------
+
+        for c in range(
+            combination_count
         ):
-            continue
 
-        cross_up = (
-            ema3[i - 1] <= ema5[i - 1]
-            and ema3[i] > ema5[i]
-        )
+            if active[c] == 0:
+                continue
 
-        if not active and cross_up:
-
-            active = True
-
-            entry_index = i
-            entry_price = close[i]
-
-            stop_price = (
-                entry_price
-                * (1.0 - stop_pct)
+            stop_hit = (
+                low[i]
+                <= stop_prices[c]
             )
 
-            target_price = (
-                entry_price
-                * (
-                    1.0
-                    + stop_pct * rr
+            target_hit = (
+                high[i]
+                >= target_prices[c]
+            )
+
+            if stop_hit:
+
+                trade_number = (
+                    trade_counts[c]
                 )
-            )
 
-            continue
+                entry_indices[
+                    c,
+                    trade_number,
+                ] = (
+                    active_entry_index[c]
+                )
 
-        if not active:
-            continue
+                exit_indices[
+                    c,
+                    trade_number,
+                ] = i
 
-        stop_hit = (
-            low[i] <= stop_price
-        )
+                entry_prices[
+                    c,
+                    trade_number,
+                ] = (
+                    active_entry_price[c]
+                )
 
-        target_hit = (
-            high[i] >= target_price
-        )
+                exit_prices[
+                    c,
+                    trade_number,
+                ] = (
+                    stop_prices[c]
+                )
 
-        if stop_hit:
+                returns[
+                    c,
+                    trade_number,
+                ] = (
+                    -stop_percentages[c]
+                    * 100.0
+                )
 
-            entry_indices[count] = (
-                entry_index
-            )
+                trade_counts[c] += 1
 
-            exit_indices[count] = i
+                active[c] = 0
 
-            entry_prices[count] = (
-                entry_price
-            )
+            elif target_hit:
 
-            exit_prices[count] = (
-                stop_price
-            )
+                trade_number = (
+                    trade_counts[c]
+                )
 
-            returns[count] = (
-                stop_price
-                / entry_price
-                - 1.0
-            ) * 100.0
+                entry_indices[
+                    c,
+                    trade_number,
+                ] = (
+                    active_entry_index[c]
+                )
 
-            count += 1
-            active = False
+                exit_indices[
+                    c,
+                    trade_number,
+                ] = i
 
-        elif target_hit:
+                entry_prices[
+                    c,
+                    trade_number,
+                ] = (
+                    active_entry_price[c]
+                )
 
-            entry_indices[count] = (
-                entry_index
-            )
+                exit_prices[
+                    c,
+                    trade_number,
+                ] = (
+                    target_prices[c]
+                )
 
-            exit_indices[count] = i
+                returns[
+                    c,
+                    trade_number,
+                ] = (
+                    stop_percentages[c]
+                    * risk_rewards[c]
+                    * 100.0
+                )
 
-            entry_prices[count] = (
-                entry_price
-            )
+                trade_counts[c] += 1
 
-            exit_prices[count] = (
-                target_price
-            )
+                active[c] = 0
 
-            returns[count] = (
-                target_price
-                / entry_price
-                - 1.0
-            ) * 100.0
+        # ----------------------------------------------------
+        # New EMA crossover entry.
+        #
+        # Entry occurs at the close of the signal bar.
+        # ----------------------------------------------------
 
-            count += 1
-            active = False
+        if signals[i] == 1:
 
-    if active:
-
-        i = n - 1
-
-        entry_indices[count] = (
-            entry_index
-        )
-
-        exit_indices[count] = i
-
-        entry_prices[count] = (
-            entry_price
-        )
-
-        exit_prices[count] = (
-            close[i]
-        )
-
-        returns[count] = (
-            close[i]
-            / entry_price
-            - 1.0
-        ) * 100.0
-
-        count += 1
-
-    return (
-        entry_indices[:count],
-        exit_indices[:count],
-        entry_prices[:count],
-        exit_prices[:count],
-        returns[:count],
-    )
-
-
-@njit
-def strategy_break_ema_numba(
-    close,
-    high,
-    ema,
-):
-    n = len(close)
-
-    entry_indices = np.empty(
-        n,
-        dtype=np.int64,
-    )
-
-    exit_indices = np.empty(
-        n,
-        dtype=np.int64,
-    )
-
-    entry_prices = np.empty(
-        n,
-        dtype=np.float64,
-    )
-
-    exit_prices = np.empty(
-        n,
-        dtype=np.float64,
-    )
-
-    returns = np.empty(
-        n,
-        dtype=np.float64,
-    )
-
-    count = 0
-
-    position_indices = np.empty(
-        n,
-        dtype=np.int64,
-    )
-
-    position_prices = np.empty(
-        n,
-        dtype=np.float64,
-    )
-
-    position_count = 0
-
-    for i in range(1, n):
-
-        if np.isnan(ema[i]):
-            continue
-
-        cross_down = (
-            close[i - 1] >= ema[i - 1]
-            and close[i] < ema[i]
-        )
-
-        if cross_down:
-
-            for p in range(
-                position_count
+            for c in range(
+                combination_count
             ):
-                entry_index = (
-                    position_indices[p]
+
+                if active[c] != 0:
+                    continue
+
+                entry_price = close[i]
+
+                stop_pct = (
+                    stop_percentages[c]
                 )
 
-                entry_price = (
-                    position_prices[p]
+                rr = (
+                    risk_rewards[c]
                 )
 
-                entry_indices[count] = (
-                    entry_index
-                )
+                active[c] = 1
 
-                exit_indices[count] = i
+                active_entry_index[c] = i
 
-                entry_prices[count] = (
+                active_entry_price[c] = (
                     entry_price
                 )
 
-                exit_prices[count] = (
-                    close[i]
+                stop_prices[c] = (
+                    entry_price
+                    * (
+                        1.0
+                        - stop_pct
+                    )
                 )
 
-                returns[count] = (
-                    close[i]
-                    / entry_price
-                    - 1.0
-                ) * 100.0
+                target_prices[c] = (
+                    entry_price
+                    * (
+                        1.0
+                        + stop_pct
+                        * rr
+                    )
+                )
 
-                count += 1
+    # --------------------------------------------------------
+    # Close any remaining trades at final close.
+    # --------------------------------------------------------
 
-            position_count = 0
+    final_index = n - 1
 
+    for c in range(
+        combination_count
+    ):
+
+        if active[c] == 0:
             continue
 
-        above_ema = (
-            close[i] > ema[i]
+        trade_number = (
+            trade_counts[c]
         )
 
-        breaks_high = (
-            high[i] > high[i - 1]
+        entry_price = (
+            active_entry_price[c]
         )
 
-        if above_ema and breaks_high:
-
-            position_indices[
-                position_count
-            ] = i
-
-            position_prices[
-                position_count
-            ] = high[i]
-
-            position_count += 1
-
-    if position_count > 0:
-
-        i = n - 1
-
-        for p in range(
-            position_count
-        ):
-
-            entry_index = (
-                position_indices[p]
-            )
-
-            entry_price = (
-                position_prices[p]
-            )
-
-            entry_indices[count] = (
-                entry_index
-            )
-
-            exit_indices[count] = i
-
-            entry_prices[count] = (
-                entry_price
-            )
-
-            exit_prices[count] = (
-                close[i]
-            )
-
-            returns[count] = (
-                close[i]
-                / entry_price
-                - 1.0
-            ) * 100.0
-
-            count += 1
-
-    return (
-        entry_indices[:count],
-        exit_indices[:count],
-        entry_prices[:count],
-        exit_prices[:count],
-        returns[:count],
-    )
-
-
-@njit
-def strategy_cross_ema_numba(
-    close,
-    ema,
-):
-    n = len(close)
-
-    entry_indices = np.empty(
-        n,
-        dtype=np.int64,
-    )
-
-    exit_indices = np.empty(
-        n,
-        dtype=np.int64,
-    )
-
-    entry_prices = np.empty(
-        n,
-        dtype=np.float64,
-    )
-
-    exit_prices = np.empty(
-        n,
-        dtype=np.float64,
-    )
-
-    returns = np.empty(
-        n,
-        dtype=np.float64,
-    )
-
-    count = 0
-
-    active = False
-    entry_index = -1
-    entry_price = 0.0
-
-    for i in range(1, n):
-
-        if np.isnan(ema[i]):
-            continue
-
-        cross_up = (
-            close[i - 1] <= ema[i - 1]
-            and close[i] > ema[i]
+        exit_price = (
+            close[final_index]
         )
 
-        cross_down = (
-            close[i - 1] >= ema[i - 1]
-            and close[i] < ema[i]
+        entry_indices[
+            c,
+            trade_number,
+        ] = (
+            active_entry_index[c]
         )
 
-        if not active and cross_up:
+        exit_indices[
+            c,
+            trade_number,
+        ] = final_index
 
-            active = True
+        entry_prices[
+            c,
+            trade_number,
+        ] = entry_price
 
-            entry_index = i
-            entry_price = close[i]
+        exit_prices[
+            c,
+            trade_number,
+        ] = exit_price
 
-        elif active and cross_down:
-
-            entry_indices[count] = (
-                entry_index
-            )
-
-            exit_indices[count] = i
-
-            entry_prices[count] = (
-                entry_price
-            )
-
-            exit_prices[count] = (
-                close[i]
-            )
-
-            returns[count] = (
-                close[i]
-                / entry_price
-                - 1.0
-            ) * 100.0
-
-            count += 1
-
-            active = False
-
-    if active:
-
-        i = n - 1
-
-        entry_indices[count] = (
-            entry_index
-        )
-
-        exit_indices[count] = i
-
-        entry_prices[count] = (
-            entry_price
-        )
-
-        exit_prices[count] = (
-            close[i]
-        )
-
-        returns[count] = (
-            close[i]
+        returns[
+            c,
+            trade_number,
+        ] = (
+            exit_price
             / entry_price
             - 1.0
         ) * 100.0
 
-        count += 1
+        trade_counts[c] += 1
 
     return (
-        entry_indices[:count],
-        exit_indices[:count],
-        entry_prices[:count],
-        exit_prices[:count],
-        returns[:count],
-    )
-
-
-def make_trade_dataframe(
-    df,
-    result,
-):
-    (
         entry_indices,
         exit_indices,
         entry_prices,
         exit_prices,
         returns,
-    ) = result
+        trade_counts,
+    )
 
+
+# ============================================================
+# BUILD TRADE DATAFRAME
+# ============================================================
+
+def build_trade_dataframe(
+    df,
+    strategy_number,
+    combination_number,
+    entry_indices,
+    exit_indices,
+    entry_prices,
+    exit_prices,
+    returns,
+):
     if len(returns) == 0:
+        return pd.DataFrame()
 
-        return pd.DataFrame(
-            columns=[
-                "entry_time",
-                "exit_time",
-                "entry_price",
-                "exit_price",
-                "return_pct",
-            ]
-        )
+    entry_times = (
+        df["timestamp"]
+        .iloc[entry_indices]
+        .to_numpy()
+    )
+
+    exit_times = (
+        df["timestamp"]
+        .iloc[exit_indices]
+        .to_numpy()
+    )
+
+    stop_pct = (
+        STOP_ARRAY[
+            combination_number
+        ]
+        * 100.0
+    )
+
+    rr = (
+        RR_ARRAY[
+            combination_number
+        ]
+    )
 
     return pd.DataFrame(
         {
+            "strategy":
+                strategy_number,
+
+            "stop_loss_pct":
+                stop_pct,
+
+            "risk_reward":
+                rr,
+
             "entry_time":
-                df["timestamp"]
-                .iloc[entry_indices]
-                .to_numpy(),
+                entry_times,
 
             "exit_time":
-                df["timestamp"]
-                .iloc[exit_indices]
-                .to_numpy(),
+                exit_times,
 
             "entry_price":
                 entry_prices,
@@ -521,107 +534,165 @@ def make_trade_dataframe(
     )
 
 
-def strategy_1_ema_rr(
-    df,
-    timeframe,
-):
-    stop_pct, rr = RR_SETTINGS[
-        timeframe
-    ]
+# ============================================================
+# RUN ONE STRATEGY
+# ============================================================
 
-    return make_trade_dataframe(
-        df,
-        strategy_1_numba(
-            df["close"].to_numpy(
-                dtype=np.float64
-            ),
-            df["high"].to_numpy(
-                dtype=np.float64
-            ),
-            df["low"].to_numpy(
-                dtype=np.float64
-            ),
-            df["ema_3"].to_numpy(
-                dtype=np.float64
-            ),
-            df["ema_5"].to_numpy(
-                dtype=np.float64
-            ),
-            stop_pct,
-            rr,
-        ),
+def run_strategy(
+    df,
+    strategy_number,
+    fast_period,
+    slow_period,
+):
+    close = np.asarray(
+        df["close"],
+        dtype=np.float64,
     )
 
-
-def strategy_price_break_ema(
-    df,
-    ema_column,
-):
-    return make_trade_dataframe(
-        df,
-        strategy_break_ema_numba(
-            df["close"].to_numpy(
-                dtype=np.float64
-            ),
-            df["high"].to_numpy(
-                dtype=np.float64
-            ),
-            df[ema_column].to_numpy(
-                dtype=np.float64
-            ),
-        ),
+    high = np.asarray(
+        df["high"],
+        dtype=np.float64,
     )
 
-
-def strategy_price_cross_ema(
-    df,
-    ema_column,
-):
-    return make_trade_dataframe(
-        df,
-        strategy_cross_ema_numba(
-            df["close"].to_numpy(
-                dtype=np.float64
-            ),
-            df[ema_column].to_numpy(
-                dtype=np.float64
-            ),
-        ),
+    low = np.asarray(
+        df["low"],
+        dtype=np.float64,
     )
 
+    fast_ema = np.asarray(
+        df[
+            f"ema_{fast_period}"
+        ],
+        dtype=np.float64,
+    )
+
+    slow_ema = np.asarray(
+        df[
+            f"ema_{slow_period}"
+        ],
+        dtype=np.float64,
+    )
+
+    # --------------------------------------------------------
+    # Find EMA crossover signals once.
+    # --------------------------------------------------------
+
+    signals = (
+        find_crossovers_numba(
+            fast_ema,
+            slow_ema,
+        )
+    )
+
+    # --------------------------------------------------------
+    # Simulate all 25 exits at once.
+    # --------------------------------------------------------
+
+    (
+        entry_indices,
+        exit_indices,
+        entry_prices,
+        exit_prices,
+        returns,
+        trade_counts,
+    ) = simulate_all_rr_numba(
+        close,
+        high,
+        low,
+        signals,
+        STOP_ARRAY,
+        RR_ARRAY,
+    )
+
+    # --------------------------------------------------------
+    # Convert Numba results into DataFrames.
+    # --------------------------------------------------------
+
+    results = {}
+
+    for combination_number in range(25):
+
+        count = (
+            trade_counts[
+                combination_number
+            ]
+        )
+
+        trades = (
+            build_trade_dataframe(
+                df,
+                strategy_number,
+                combination_number,
+                entry_indices[
+                    combination_number,
+                    :count,
+                ],
+                exit_indices[
+                    combination_number,
+                    :count,
+                ],
+                entry_prices[
+                    combination_number,
+                    :count,
+                ],
+                exit_prices[
+                    combination_number,
+                    :count,
+                ],
+                returns[
+                    combination_number,
+                    :count,
+                ],
+            )
+        )
+
+        results[
+            combination_number
+        ] = trades
+
+    return results
+
+
+# ============================================================
+# RUN ALL 8 STRATEGIES
+# ============================================================
 
 def generate_strategies(
     df,
-    timeframe,
 ):
-    return {
-        "strategy_1":
-            strategy_1_ema_rr(
-                df,
-                timeframe,
-            ),
+    results = {}
 
-        "strategy_2":
-            strategy_price_break_ema(
-                df,
-                "ema_21",
-            ),
+    total = len(
+        EMA_PAIRS
+    )
 
-        "strategy_3":
-            strategy_price_cross_ema(
-                df,
-                "ema_21",
-            ),
+    for strategy_number, (
+        fast_period,
+        slow_period,
+    ) in enumerate(
+        EMA_PAIRS,
+        start=1,
+    ):
 
-        "strategy_4":
-            strategy_price_break_ema(
-                df,
-                "ema_200",
-            ),
+        print(
+            f"    Strategy "
+            f"{strategy_number}/{total}: "
+            f"EMA {fast_period} -> "
+            f"EMA {slow_period}",
+            flush=True,
+        )
 
-        "strategy_5":
-            strategy_price_cross_ema(
+        strategy_results = (
+            run_strategy(
                 df,
-                "ema_200",
-            ),
-    }
+                strategy_number,
+                fast_period,
+                slow_period,
+            )
+        )
+
+        results[
+            f"strategy_{strategy_number}"
+        ] = strategy_results
+
+    return results

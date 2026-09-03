@@ -1,98 +1,179 @@
-from strategies import generate_strategies
+import numpy as np
+import pandas as pd
 
-from equity_methods import (
-    build_all_equity_curves,
-)
+from numba import njit
 
 
-def run_timeframe(
-    df,
-    timeframe,
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+STARTING_EQUITY = 100.000
+
+
+# ============================================================
+# EQUITY CALCULATION
+# ============================================================
+
+@njit
+def calculate_equity_numba(
+    returns,
 ):
-    strategies = generate_strategies(
-        df,
-        timeframe,
+    n = len(
+        returns
     )
 
-    results = {}
+    equity = np.empty(
+        n,
+        dtype=np.float64,
+    )
 
-    total_strategies = len(strategies)
+    value = STARTING_EQUITY
 
-    for strategy_number, (
-        strategy_name,
-        trades,
-    ) in enumerate(
-        strategies.items(),
-        start=1,
-    ):
+    for i in range(n):
 
-        print(
-            f"\n  [{strategy_number}/{total_strategies}] "
-            f"{strategy_name}",
-            flush=True,
+        value *= (
+            1.0
+            + returns[i]
+            / 100.0
         )
 
-        print(
-            f"    Trades: {len(trades):,}",
-            flush=True,
+        # Keep equity at 3 decimals.
+        value = np.round(
+            value,
+            3,
         )
 
-        curves = build_all_equity_curves(
-            trades,
-            strategy_name,
+        equity[i] = value
+
+    return equity
+
+
+# ============================================================
+# BUILD ONE EQUITY CURVE
+# ============================================================
+
+def build_equity_curve(
+    trades,
+):
+    if trades.empty:
+
+        return pd.DataFrame(
+            columns=[
+                "timestamp",
+                "entry_time",
+                "exit_time",
+                "entry_price",
+                "exit_price",
+                "return_pct",
+                "equity",
+            ]
         )
 
-        results[strategy_name] = {
-            "trades": trades,
-            "equity": curves,
+    trades = (
+        trades
+        .sort_values(
+            "exit_time"
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    returns = np.asarray(
+        trades["return_pct"],
+        dtype=np.float64,
+    )
+
+    equity = (
+        calculate_equity_numba(
+            returns
+        )
+    )
+
+    result = pd.DataFrame(
+        {
+            "timestamp":
+                trades[
+                    "exit_time"
+                ].to_numpy(),
+
+            "entry_time":
+                trades[
+                    "entry_time"
+                ].to_numpy(),
+
+            "exit_time":
+                trades[
+                    "exit_time"
+                ].to_numpy(),
+
+            "entry_price":
+                trades[
+                    "entry_price"
+                ].to_numpy(),
+
+            "exit_price":
+                trades[
+                    "exit_price"
+                ].to_numpy(),
+
+            "return_pct":
+                returns,
+
+            "equity":
+                equity,
         }
+    )
 
-        print(
-            f"    {strategy_name} complete",
-            flush=True,
-        )
-
-    return results
+    return result
 
 
-def run_all_timeframes(
-    timeframe_data,
+# ============================================================
+# BUILD ALL EQUITY CURVES
+# ============================================================
+
+def build_all_equity_curves(
+    strategy_results,
 ):
     results = {}
 
-    total_timeframes = len(
-        timeframe_data
-    )
+    for (
+        combination_number,
+        trades,
+    ) in strategy_results.items():
 
-    for timeframe_number, (
-        timeframe,
-        df,
-    ) in enumerate(
-        timeframe_data.items(),
-        start=1,
-    ):
-
-        print(
-            f"\n"
-            f"{'=' * 70}\n"
-            f"TIMEFRAME "
-            f"{timeframe_number}/{total_timeframes}: "
-            f"{timeframe}\n"
-            f"{'=' * 70}",
-            flush=True,
+        stop_pct = (
+            trades[
+                "stop_loss_pct"
+            ].iloc[0]
+            if not trades.empty
+            else 0.0
         )
 
-        results[timeframe] = (
-            run_timeframe(
-                df,
-                timeframe,
+        rr = (
+            trades[
+                "risk_reward"
+            ].iloc[0]
+            if not trades.empty
+            else 0.0
+        )
+
+        curve = (
+            build_equity_curve(
+                trades
             )
         )
 
-        print(
-            f"\nFinished timeframe: "
-            f"{timeframe}",
-            flush=True,
-        )
+        results[
+            combination_number
+        ] = {
+            "trades": trades,
+            "equity": curve,
+            "stop_loss_pct":
+                stop_pct,
+            "risk_reward":
+                rr,
+        }
 
     return results

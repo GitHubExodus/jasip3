@@ -4,54 +4,100 @@ import pandas as pd
 from numba import njit
 
 
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
 TIMEFRAMES = {
     "5m": "5min",
     "30m": "30min",
+    "4h": "4h",
     "1d": "1D",
-    "1w": "1W",
+    "1w": "W-FRI",
 }
 
+EMA_PERIODS = (
+    3,
+    5,
+    9,
+    14,
+    21,
+    30,
+    50,
+    100,
+    200,
+)
+
+
+# ============================================================
+# EMA
+# ============================================================
 
 @njit
-def ema_numpy(values, period):
+def ema_numba(
+    values,
+    period,
+):
     n = len(values)
 
-    result = np.empty(n)
+    result = np.empty(
+        n,
+        dtype=np.float64,
+    )
+
     result[:] = np.nan
 
     if n < period:
         return result
-
-    alpha = 2.0 / (period + 1.0)
 
     total = 0.0
 
     for i in range(period):
         total += values[i]
 
-    result[period - 1] = total / period
+    result[period - 1] = (
+        total / period
+    )
 
-    for i in range(period, n):
+    alpha = (
+        2.0
+        / (period + 1.0)
+    )
+
+    for i in range(
+        period,
+        n,
+    ):
         result[i] = (
             alpha * values[i]
-            + (1.0 - alpha) * result[i - 1]
+            + (
+                1.0 - alpha
+            )
+            * result[i - 1]
         )
 
     return result
 
 
-def prepare_raw_data(df):
+# ============================================================
+# PREPARE RAW DATA
+# ============================================================
+
+def prepare_raw_data(
+    df,
+):
     df = df.copy()
 
     df.columns = [
-        str(c).strip().lower()
-        for c in df.columns
+        str(column)
+        .strip()
+        .lower()
+        for column in df.columns
     ]
 
     rename_map = {
         "datetime": "timestamp",
         "date": "timestamp",
-        "volume": "volume",
         "vol": "volume",
     }
 
@@ -59,7 +105,7 @@ def prepare_raw_data(df):
         columns=rename_map
     )
 
-    required = [
+    required_columns = [
         "timestamp",
         "open",
         "high",
@@ -68,8 +114,9 @@ def prepare_raw_data(df):
     ]
 
     missing = [
-        x for x in required
-        if x not in df.columns
+        column
+        for column in required_columns
+        if column not in df.columns
     ]
 
     if missing:
@@ -87,7 +134,7 @@ def prepare_raw_data(df):
     )
 
     df = df.drop_duplicates(
-        subset=["timestamp"]
+        subset="timestamp"
     )
 
     numeric_columns = [
@@ -120,21 +167,28 @@ def prepare_raw_data(df):
     return df
 
 
+# ============================================================
+# RESAMPLE
+# ============================================================
+
 def resample_timeframe(
     raw_df,
     timeframe,
 ):
-    """
-    Convert 1-minute data into the requested
-    timeframe.
-
-    The timestamp represents the CLOSE of
-    the resulting candle.
-    """
-
-    rule = TIMEFRAMES[timeframe]
+    rule = TIMEFRAMES[
+        timeframe
+    ]
 
     x = raw_df.copy()
+
+    # Convert to New York time before
+    # creating US stock-market timeframes.
+    x["timestamp"] = (
+        x["timestamp"]
+        .dt.tz_convert(
+            "America/New_York"
+        )
+    )
 
     x = x.set_index(
         "timestamp"
@@ -173,7 +227,13 @@ def resample_timeframe(
     return result
 
 
-def add_indicators(df):
+# ============================================================
+# ADD ALL EMAS
+# ============================================================
+
+def add_indicators(
+    df,
+):
     df = df.copy()
 
     close = np.asarray(
@@ -181,30 +241,25 @@ def add_indicators(df):
         dtype=np.float64,
     )
 
-    df["ema_3"] = ema_numpy(
-        close,
-        3,
-    )
+    for period in EMA_PERIODS:
 
-    df["ema_5"] = ema_numpy(
-        close,
-        5,
-    )
-
-    df["ema_21"] = ema_numpy(
-        close,
-        21,
-    )
-
-    df["ema_200"] = ema_numpy(
-        close,
-        200,
-    )
+        df[
+            f"ema_{period}"
+        ] = ema_numba(
+            close,
+            period,
+        )
 
     return df
 
 
-def build_all_timeframes(raw_df):
+# ============================================================
+# BUILD ALL TIMEFRAMES
+# ============================================================
+
+def build_all_timeframes(
+    raw_df,
+):
     raw_df = prepare_raw_data(
         raw_df
     )
@@ -214,19 +269,31 @@ def build_all_timeframes(raw_df):
     for timeframe in TIMEFRAMES:
 
         print(
-            f"Creating {timeframe} candles...",
+            f"Creating {timeframe}...",
             flush=True,
         )
 
-        data = resample_timeframe(
-            raw_df,
-            timeframe,
+        timeframe_df = (
+            resample_timeframe(
+                raw_df,
+                timeframe,
+            )
         )
 
-        data = add_indicators(
-            data
+        timeframe_df = (
+            add_indicators(
+                timeframe_df
+            )
         )
 
-        result[timeframe] = data
+        result[
+            timeframe
+        ] = timeframe_df
+
+        print(
+            f"  {timeframe}: "
+            f"{len(timeframe_df):,} bars",
+            flush=True,
+        )
 
     return result
