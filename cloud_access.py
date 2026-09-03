@@ -10,22 +10,6 @@ R2_ACCESS_KEY_ID = "00e18b0c16ecb3395cd6f7c8e0eb3554"
 R2_SECRET_ACCESS_KEY = "33799355abaedc234309dbfbc80a2a66c3bfd856f0dcaecf0031e1fbcbcd84a0"
 R2_BUCKET = "stocks-data"
 
-import io
-import os
-
-import boto3
-import pandas as pd
-
-
-# ============================================================
-# R2 CONFIGURATION
-# ============================================================
-
-R2_ENDPOINT_URL = os.environ["R2_ENDPOINT_URL"]
-R2_ACCESS_KEY_ID = os.environ["R2_ACCESS_KEY_ID"]
-R2_SECRET_ACCESS_KEY = os.environ["R2_SECRET_ACCESS_KEY"]
-R2_BUCKET = os.environ["R2_BUCKET"]
-
 
 s3 = boto3.client(
     "s3",
