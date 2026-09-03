@@ -16,25 +16,41 @@ def run_timeframe(
 
     results = {}
 
-    for strategy_name, trades in (
-        strategies.items()
+    total_strategies = len(strategies)
+
+    for strategy_number, (
+        strategy_name,
+        trades,
+    ) in enumerate(
+        strategies.items(),
+        start=1,
     ):
 
         print(
-            f"  {strategy_name}: "
-            f"{len(trades):,} trades",
+            f"\n  [{strategy_number}/{total_strategies}] "
+            f"{strategy_name}",
+            flush=True,
+        )
+
+        print(
+            f"    Trades: {len(trades):,}",
             flush=True,
         )
 
         curves = build_all_equity_curves(
             trades,
-            df,
+            strategy_name,
         )
 
         results[strategy_name] = {
             "trades": trades,
             "equity": curves,
         }
+
+        print(
+            f"    {strategy_name} complete",
+            flush=True,
+        )
 
     return results
 
@@ -44,12 +60,25 @@ def run_all_timeframes(
 ):
     results = {}
 
-    for timeframe, df in (
-        timeframe_data.items()
+    total_timeframes = len(
+        timeframe_data
+    )
+
+    for timeframe_number, (
+        timeframe,
+        df,
+    ) in enumerate(
+        timeframe_data.items(),
+        start=1,
     ):
 
         print(
-            f"\nRunning {timeframe}...",
+            f"\n"
+            f"{'=' * 70}\n"
+            f"TIMEFRAME "
+            f"{timeframe_number}/{total_timeframes}: "
+            f"{timeframe}\n"
+            f"{'=' * 70}",
             flush=True,
         )
 
@@ -58,6 +87,12 @@ def run_all_timeframes(
                 df,
                 timeframe,
             )
+        )
+
+        print(
+            f"\nFinished timeframe: "
+            f"{timeframe}",
+            flush=True,
         )
 
     return results
