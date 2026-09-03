@@ -6,11 +6,11 @@ from numba import njit
 
 STARTING_EQUITY = 100.000
 MA_PERIOD = 5
+PROGRESS_INTERVAL = 10000
 
 
 @njit
 def calculate_raw_equity_numba(
-    exit_indices,
     returns,
 ):
     n = len(returns)
@@ -62,8 +62,13 @@ def calculate_raw_equity(
     )
 
     equity = calculate_raw_equity_numba(
-        np.arange(len(returns)),
-        returns,
+        returns
+    )
+
+    print(
+        f"    Raw equity: "
+        f"{len(returns):,} / {len(returns):,} trades",
+        flush=True,
     )
 
     return pd.DataFrame(
@@ -80,40 +85,11 @@ def calculate_raw_equity(
     )
 
 
-def calculate_buying_power(
-    current_value,
-    ma,
-    average_distance,
-):
-    if current_value <= ma:
-        return 0.0
-
-    distance = (
-        (current_value - ma)
-        / ma
-    ) * 100.0
-
-    if average_distance <= 0:
-        return 1.0
-
-    power = (
-        distance
-        / average_distance
-    )
-
-    return max(
-        0.0,
-        min(
-            1.0,
-            power,
-        ),
-    )
-
-
 def build_equity_method(
     trades,
     raw_equity,
     method,
+    strategy_name="strategy",
 ):
     if trades.empty:
         return pd.DataFrame(
@@ -156,11 +132,12 @@ def build_equity_method(
     trade_returns = (
         trades[
             "return_pct"
-        ]
-        .to_numpy(
+        ].to_numpy(
             dtype=np.float64
         )
     )
+
+    total = len(trades)
 
     output_times = []
     output_equity = []
@@ -170,7 +147,22 @@ def build_equity_method(
 
     equity = STARTING_EQUITY
 
-    for i in range(len(trades)):
+    method_name = (
+        "Equity Method 1"
+        if method == 1
+        else "Equity Method 2"
+    )
+
+    print(
+        f"    {strategy_name}: "
+        f"{method_name}",
+        flush=True,
+    )
+
+    processed = 0
+    last_logged = 0
+
+    for i in range(total):
 
         entry_time = trade_entries[i]
 
@@ -181,6 +173,7 @@ def build_equity_method(
         )
 
         if available < MA_PERIOD:
+            processed += 1
             continue
 
         window_start = (
@@ -194,6 +187,7 @@ def build_equity_method(
         ma = np.mean(window)
 
         if ma <= 0:
+            processed += 1
             continue
 
         current = (
@@ -208,9 +202,11 @@ def build_equity_method(
         ) * 100.0
 
         if current <= ma:
+
             power = 0.0
 
         elif method == 1:
+
             power = 1.0
 
         else:
@@ -232,10 +228,8 @@ def build_equity_method(
                     ]
                 )
 
-                historical_ma = (
-                    np.mean(
-                        historical_window
-                    )
+                historical_ma = np.mean(
+                    historical_window
                 )
 
                 if historical_ma <= 0:
@@ -250,281 +244,106 @@ def build_equity_method(
                 ) * 100.0
 
                 distances.append(
-                    historical_distance
+                    abs(historical_distance)
                 )
 
             if len(distances) == 0:
+
                 power = 1.0
 
             else:
 
-                average_distance = (
-                    np.mean(
-                        np.asarray(
-                            distances
+                average_distance = np.mean(
+                    np.asarray(
+                        distances,
+                        dtype=np.float64,
+                    )
+                )
+
+                if average_distance <= 0:
+
+                    power = 1.0
+
+                else:
+
+                    power = (
+                        abs(distance)
+                        / average_distance
+                    )
+
+                    power = max(
+                        0.0,
+                        min(
+                            1.0,
+                            power,
                         )
                     )
-                )
 
-                if average_distance <= 0:
-                    power = 1.0
-                else:
-                    power = (
-                        distance
-                        / average_distance
-                    )
+        if power > 0:
 
-                    power = max(
-                        0.0,
-                        min(
-                            1.0,
-                            power,
-                        ),
-                    )
-
-        if power <= 0:
-            continue
-
-        effective = (
-            trade_returns[i]
-            * power
-        )
-
-        equity *= (
-            1.0
-            + effective / 100.0
-        )
-
-        equity = round(
-            equity,
-            3,
-        )
-
-        output_times.append(
-            trade_exits[i]
-        )
-
-        output_equity.append(
-            equity
-        )
-
-        output_returns.append(
-            trade_returns[i]
-        )
-
-        output_power.append(
-            power
-        )
-
-        output_effective.append(
-            effective
-        )
-
-    return pd.DataFrame(
-        {
-            "timestamp":
-                output_times,
-
-            "equity":
-                output_equity,
-
-            "trade_return_pct":
-                output_returns,
-
-            "buying_power":
-                output_power,
-
-            "effective_return_pct":
-                output_effective,
-        }
-    )
-
-
-def build_stock_method(
-    trades,
-    df,
-    ema_column,
-    method,
-):
-    if trades.empty:
-        return pd.DataFrame(
-            columns=[
-                "timestamp",
-                "equity",
-                "trade_return_pct",
-                "buying_power",
-                "effective_return_pct",
-            ]
-        )
-
-    timestamps = (
-        df["timestamp"].to_numpy()
-    )
-
-    close = (
-        df["close"]
-        .to_numpy(
-            dtype=np.float64
-        )
-    )
-
-    ema = (
-        df[ema_column]
-        .to_numpy(
-            dtype=np.float64
-        )
-    )
-
-    valid = ~np.isnan(ema)
-
-    historical_distance = np.full(
-        len(df),
-        np.nan,
-    )
-
-    historical_distance[valid] = (
-        (
-            close[valid]
-            - ema[valid]
-        )
-        / ema[valid]
-    ) * 100.0
-
-    trade_entries = (
-        trades["entry_time"]
-        .to_numpy()
-    )
-
-    trade_exits = (
-        trades["exit_time"]
-        .to_numpy()
-    )
-
-    returns = (
-        trades["return_pct"]
-        .to_numpy(
-            dtype=np.float64
-        )
-    )
-
-    equity = STARTING_EQUITY
-
-    output_times = []
-    output_equity = []
-    output_returns = []
-    output_power = []
-    output_effective = []
-
-    for i in range(len(trades)):
-
-        entry = trade_entries[i]
-
-        index = np.searchsorted(
-            timestamps,
-            entry,
-            side="right",
-        ) - 1
-
-        if index < 0:
-            continue
-
-        if np.isnan(
-            historical_distance[index]
-        ):
-            continue
-
-        current_price = close[index]
-        current_ema = ema[index]
-
-        if current_price <= current_ema:
-            continue
-
-        if method == 1:
-
-            power = 1.0
-
-        else:
-
-            history = (
-                historical_distance[
-                    :index + 1
-                ]
+            effective = (
+                trade_returns[i]
+                * power
             )
 
-            history = history[
-                ~np.isnan(history)
-            ]
+            equity *= (
+                1.0
+                + effective / 100.0
+            )
 
-            if len(history) == 0:
-                power = 1.0
+            equity = round(
+                equity,
+                3,
+            )
 
-            else:
+            output_times.append(
+                trade_exits[i]
+            )
 
-                average_distance = (
-                    np.mean(history)
-                )
+            output_equity.append(
+                equity
+            )
 
-                if average_distance <= 0:
-                    power = 1.0
+            output_returns.append(
+                trade_returns[i]
+            )
 
-                else:
+            output_power.append(
+                power
+            )
 
-                    current_distance = (
-                        historical_distance[
-                            index
-                        ]
-                    )
+            output_effective.append(
+                effective
+            )
 
-                    power = (
-                        current_distance
-                        / average_distance
-                    )
+        processed += 1
 
-                    power = max(
-                        0.0,
-                        min(
-                            1.0,
-                            power,
-                        ),
-                    )
+        if (
+            processed - last_logged
+            >= PROGRESS_INTERVAL
+            or processed == total
+        ):
 
-        if power <= 0:
-            continue
+            percent = (
+                processed
+                / total
+            ) * 100.0
 
-        effective = (
-            returns[i]
-            * power
-        )
+            print(
+                f"      "
+                f"{processed:,} / "
+                f"{total:,} trades "
+                f"({percent:.1f}%)",
+                flush=True,
+            )
 
-        equity *= (
-            1.0
-            + effective / 100.0
-        )
+            last_logged = processed
 
-        equity = round(
-            equity,
-            3,
-        )
-
-        output_times.append(
-            trade_exits[i]
-        )
-
-        output_equity.append(
-            equity
-        )
-
-        output_returns.append(
-            returns[i]
-        )
-
-        output_power.append(
-            power
-        )
-
-        output_effective.append(
-            effective
-        )
+    print(
+        f"    {method_name} finished: "
+        f"{processed:,} / {total:,}",
+        flush=True,
+    )
 
     return pd.DataFrame(
         {
@@ -548,8 +367,13 @@ def build_stock_method(
 
 def build_all_equity_curves(
     trades,
-    df,
+    strategy_name="strategy",
 ):
+    print(
+        f"    Building raw equity...",
+        flush=True,
+    )
+
     raw = calculate_raw_equity(
         trades
     )
@@ -558,32 +382,18 @@ def build_all_equity_curves(
         trades,
         raw,
         method=1,
+        strategy_name=strategy_name,
     )
 
     equity_2 = build_equity_method(
         trades,
         raw,
         method=2,
-    )
-
-    stock_1 = build_stock_method(
-        trades,
-        df,
-        "ema_21",
-        method=1,
-    )
-
-    stock_2 = build_stock_method(
-        trades,
-        df,
-        "ema_21",
-        method=2,
+        strategy_name=strategy_name,
     )
 
     return {
         "raw": raw,
         "equity_method_1": equity_1,
         "equity_method_2": equity_2,
-        "stock_method_1": stock_1,
-        "stock_method_2": stock_2,
     }
