@@ -26,7 +26,7 @@ R2_BUCKET = "stocks-data"
 # PATHS
 # ============================================================
 
-EQUITY_TEST_PATH = "equity_test"
+EQUITY_TEST_PATH = "equity_test_R"
 GLOBAL_EQUITY_PATH = "global_equity/global_equity.parquet"
 
 
