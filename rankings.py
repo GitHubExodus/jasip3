@@ -25,10 +25,10 @@ R2_BUCKET = "stocks-data"
 # PATHS
 # ============================================================
 
-EQUITY_TEST_PATH = "equity_test"
+EQUITY_TEST_PATH = "equity_test_R"
 
 OUTPUT_PATH = (
-    "global_equity/"
+    "global_equity_R/"
     "raw_equity_rankings.parquet"
 )
 
@@ -94,7 +94,7 @@ def get_equity_files():
             key = obj["Key"]
 
             if not key.endswith(
-                "_equity.parquet"
+                "_equity_R.parquet"
             ):
                 continue
 
@@ -150,7 +150,7 @@ def parse_file_information(key):
     filename = parts[3]
 
     strategy_name = filename.replace(
-        "_equity.parquet",
+        "_equity_R.parquet",
         "",
     )
 
