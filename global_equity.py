@@ -105,7 +105,7 @@ def get_equity_files():
 
         for obj in contents:
             key = obj["Key"]
-
+            log(f"Found equity file: {key}")
             if not key.endswith("_equity_R.parquet"):
                 continue
 
