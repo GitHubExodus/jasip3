@@ -27,7 +27,7 @@ R2_BUCKET = "stocks-data"
 # ============================================================
 
 EQUITY_TEST_PATH = "equity_test_R"
-GLOBAL_EQUITY_PATH = "global_equity/global_equity.parquet"
+GLOBAL_EQUITY_PATH = "global_equity_R/global_equity_R.parquet"
 
 
 # ============================================================
@@ -106,7 +106,7 @@ def get_equity_files():
         for obj in contents:
             key = obj["Key"]
 
-            if not key.endswith("_equity.parquet"):
+            if not key.endswith("_equity_R.parquet"):
                 continue
 
             files.append(key)
