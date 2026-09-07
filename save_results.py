@@ -103,11 +103,11 @@ def save_timeframe_results(
         # ----------------------------------------------------
 
         trades_key = (
-            f"equity_test/"
+            f"equity_test_R/"
             f"{symbol}/"
             f"{timeframe}/"
             f"{strategy_name}/"
-            f"trades.parquet"
+            f"trades_R.parquet"
         )
 
         save_dataframe(
@@ -120,11 +120,11 @@ def save_timeframe_results(
         # ----------------------------------------------------
 
         equity_key = (
-            f"equity_test/"
+            f"equity_test_R/"
             f"{symbol}/"
             f"{timeframe}/"
             f"{strategy_name}/"
-            f"equity.parquet"
+            f"equity_R.parquet"
         )
 
         save_dataframe(
@@ -166,10 +166,10 @@ def save_strategy_equity(
 ):
 
     key = (
-        f"equity_test/"
+        f"equity_test_R/"
         f"{symbol}/"
         f"{timeframe}/"
-        f"{strategy_name}_equity.parquet"
+        f"{strategy_name}_equity_R.parquet"
     )
 
     save_dataframe(
